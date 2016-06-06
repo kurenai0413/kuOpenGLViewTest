@@ -1,5 +1,6 @@
 #pragma once
 #include <opencv2/opencv.hpp>
+#include <gl/glut.h>
 #include <GLFW/glfw3.h>
 
 #pragma comment(lib,"opencv_world310d.lib")
@@ -8,6 +9,11 @@
 
 using namespace cv;
 using namespace std;
+
+#define		ImgWidth	640
+#define		ImgHeight	480
+#define     farClip		0
+#define		nearClip	5000
 
 // Setting an error callback
 void init();
@@ -18,6 +24,11 @@ bool LoadExtrinsicParam(char * Filename);
 void DispIntrinsicParam();
 void DispExtrinsicParam();
 void DrawAxes(float length);
+void RenderWireCubes(int CBSize);
+void IntrinsicCVtoGL(Mat IntParam, double GLProjection[16]);
+void ExtrinsicCVtoGL(Mat RotMat, Mat TransVec, double GLModelView[16]);
+void SetGLProjectionMat(double m[16]);
+void SetGLModelviewMat(double gl_para[16]);
 
 Mat					CamFrame;
 Mat					IntrinsicMat;
@@ -27,6 +38,9 @@ Mat					RotationMat;
 Mat					TranslationVec;
 Mat					ExtrinsicMat;
 Mat					InvExtrinsicMat;
+
+double				m[16];
+double				exglpara[16];
 
 void main()
 {
@@ -39,7 +53,8 @@ void main()
 	if (!glfwInit())
 		exit(EXIT_FAILURE);
 
-	GLFWwindow * window = glfwCreateWindow(1280, 480, "Stereo", NULL, NULL);
+
+	GLFWwindow * window = glfwCreateWindow(640, 480, "Stereo", NULL, NULL);
 	if (!window)
 	{
 		glfwTerminate();
@@ -47,21 +62,25 @@ void main()
 	}
 
 	glfwMakeContextCurrent(window);
-	//glfwSwapInterval(1);		// the number of screen updates to wait from the time
+	glfwSwapInterval(1);		// the number of screen updates to wait from the time
 	glfwSetKeyCallback(window, key_callback);
 
 	while (!glfwWindowShouldClose(window))
 	{
 		// draw something here
-
+		Mat					UndistortImg;
 		Mat					GLFlipedFrame;			// Fliped camera frame for GL display 
-		flip(CamFrame, GLFlipedFrame, 0);
 
+		undistort(CamFrame, UndistortImg, IntrinsicMat, DistParam);
+		flip(UndistortImg, GLFlipedFrame, 0);
 		glDrawPixels(640, 480, GL_BGR_EXT, GL_UNSIGNED_BYTE, GLFlipedFrame.ptr());
 
 		glViewport(0, 0, 640, 480);
-		
-		DrawAxes(0.5);
+		SetGLProjectionMat(m);
+		SetGLModelviewMat(exglpara);
+
+		//DrawAxes(25);
+		RenderWireCubes(25);
 
 		glfwSwapBuffers(window);
 		glfwPollEvents();	// This function processes only those events that are already 
@@ -216,4 +235,106 @@ void DrawAxes(float length)
 	glEnd();
 
 	glPopAttrib();
+}
+
+void IntrinsicCVtoGL(Mat IntParam, double GLProjection[16])
+{
+	int			i, j;
+	double		p[3][3];
+	double		q[4][4];
+
+	memset(GLProjection, 0, 16 * sizeof(double));
+
+	for (i = 0; i < 3; i++)
+	{
+		for (j = 0; j < 3; j++)
+		{
+			p[i][j] = IntParam.at<float>(i, j);
+		}
+	}
+
+	for (i = 0; i < 3; i++)
+	{
+		p[1][i] = (ImgHeight - 1) * p[2][i] - p[1][i];
+	}
+
+	q[0][0] = (2.0 * p[0][0] / (ImgWidth - 1));
+	q[0][1] = (2.0 * p[0][1] / (ImgWidth - 1));
+	q[0][2] = ((2.0 * p[0][2] / (ImgWidth - 1)) - 1.0);
+	q[0][3] = 0.0;
+
+	q[1][0] = 0.0;
+	q[1][1] = (2.0 * p[1][1] / (ImgHeight - 1));
+	q[1][2] = ((2.0 * p[1][2] / (ImgHeight - 1)) - 1.0);
+	q[1][3] = 0.0;
+
+	q[2][0] = 0.0;
+	q[2][1] = 0.0;
+	q[2][2] = (farClip + nearClip) / (farClip - nearClip);
+	q[2][3] = -2.0 * farClip * nearClip / (farClip - nearClip);
+
+	q[3][0] = 0.0;
+	q[3][1] = 0.0;
+	q[3][2] = 1.0;
+	q[3][3] = 0.0;
+
+	// transpose
+	for (i = 0; i < 4; i++)
+	{
+		for (j = 0; j < 4; j++)
+		{
+			GLProjection[4 * i + j] = q[j][i];
+		}
+	}
+}
+
+void ExtrinsicCVtoGL(Mat RotMat, Mat TransVec, double GLModelView[16])
+{
+	memset(GLModelView, 0, 16 * sizeof(double));
+	for (int i = 0; i < 3; i++)
+	{
+		for (int j = 0; j < 3; j++)
+		{
+			GLModelView[4 * i + j] = RotMat.at<float>(j, i);
+		}
+		GLModelView[12 + i] = TransVec.at<float>(i, 0);
+	}
+	GLModelView[15] = 1;
+}
+
+void SetGLProjectionMat(double m[16])
+{
+	glMatrixMode(GL_PROJECTION);
+	IntrinsicCVtoGL(IntrinsicMat, m);
+	glLoadMatrixd(m);
+	glPushMatrix();
+}
+
+void SetGLModelviewMat(double gl_para[16])
+{
+	// you will have to set modelview matrix using extrinsic camera params
+	glMatrixMode(GL_MODELVIEW);
+	glLoadIdentity();
+	ExtrinsicCVtoGL(RotationMat, TranslationVec, gl_para);
+	glLoadMatrixd(gl_para);
+	glPushMatrix();
+}
+
+void RenderWireCubes(int CBSize)
+{
+	glColor3f(0, 1, 0);
+	for (int i = 0; i < 2; i++)
+	{
+		for (int j = 0; j < 3; j++)
+		{
+			glPushMatrix();
+			glTranslatef(-1.5*CBSize + 2 * CBSize * i, 2.5*CBSize - 2 * CBSize * j, 0.5*CBSize);
+			glutWireCube(CBSize);
+			glPopMatrix();
+			glPushMatrix();
+			glTranslatef(-0.5*CBSize + 2 * CBSize * i, 1.5*CBSize - 2 * CBSize * j, 0.5*CBSize);
+			glutWireCube(CBSize);
+			glPopMatrix();
+		}
+	}
 }
